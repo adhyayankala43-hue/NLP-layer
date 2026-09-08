@@ -3,14 +3,12 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # LangChain & Google GenAI imports
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.tools import tool
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.tools import tool
 
 load_dotenv()
 
@@ -73,7 +71,7 @@ MOCK_COURSES = {
         "credits": 4, 
         "prereqs": [], 
         "seats": 3, 
-        "schedule": "MWF 09:00-10:00 AM"  # Overlaps with CS101 for time conflict testing
+        "schedule": "MWF 09:00-10:00 AM"
     }
 }
 
@@ -222,33 +220,16 @@ tools = [
     drop_course
 ]
 
-# ==========================================
-# 3. AGENT ORCHESTRATION
-# ==========================================
-agent_prompt = ChatPromptTemplate.from_messages([
-    ("system", 
-     "You are CampusBot, an official AI Course Registration Assistant. "
-     "Help students discover courses, check prerequisites, inspect schedules, check seats, and register/drop classes. "
-     "Always invoke tools to check actual database state before answering. "
-     "When asked to register, call register_for_course directly."),
-    ("user", "Student ID: {student_id}\nQuery: {user_message}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad")
-])
-
-agent = create_tool_calling_agent(llm, tools, agent_prompt)
-agent_executor = AgentExecutor(
-    agent=agent, 
-    tools=tools, 
-    return_intermediate_steps=True, 
-    verbose=True
-)
+# Standard Tool Binding
+tools_by_name = {t.name: t for t in tools}
+llm_with_tools = llm.bind_tools(tools)
 
 class ChatRequest(BaseModel):
     student_id: Optional[str] = "12345"
     message: str
 
 # ==========================================
-# 4. FRONTEND UI ROUTE
+# 3. FRONTEND UI ROUTE
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
@@ -369,29 +350,40 @@ async def serve_ui():
     """
 
 # ==========================================
-# 5. API ENDPOINT
+# 4. API ENDPOINT
 # ==========================================
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
-        result = await agent_executor.ainvoke({
-            "student_id": request.student_id or "12345",
-            "user_message": request.message
-        })
+        student_id = request.student_id or "12345"
+        prompt = (
+            f"You are CampusBot, an official AI Course Registration Assistant. "
+            f"Student ID: {student_id}. Answer the user query using tools if necessary.\n"
+            f"User Query: {request.message}"
+        )
         
-        reply_text = result["output"]
+        ai_message = await llm_with_tools.ainvoke(prompt)
         
         detected_intent = "general_inquiry"
         detected_course = None
-        
-        if result.get("intermediate_steps"):
-            last_step = result["intermediate_steps"][-1]
-            action = last_step[0]
-            detected_intent = action.tool
-            tool_args = action.tool_input
-            if isinstance(tool_args, dict):
-                detected_course = tool_args.get("course_code")
-        
+        reply_text = ai_message.content or ""
+
+        if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+            tool_call = ai_message.tool_calls[0]
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
+            
+            detected_intent = tool_name
+            detected_course = tool_args.get("course_code")
+            
+            if tool_name in tools_by_name:
+                selected_tool = tools_by_name[tool_name]
+                if "student_id" in selected_tool.args and "student_id" not in tool_args:
+                    tool_args["student_id"] = student_id
+                
+                tool_output = selected_tool.invoke(tool_args)
+                reply_text = str(tool_output)
+
         return {
             "status": "success",
             "intent": detected_intent,
