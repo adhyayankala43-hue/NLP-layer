@@ -22,11 +22,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("AQ.Ab8RN6JwgaDGRZ9Wdb6LqRYk7pryC4m7e7eeONH8v4qnNVE-LQ")
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
-    google_api_key=api_key
+    model="gemini-3.6-flash", 
+    google_api_key="AQ.Ab8RN6JwgaDGRZ9Wdb6LqRYk7pryC4m7e7eeONH8v4qnNVE-LQ"
 )
 
 # ==========================================
