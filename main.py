@@ -43,7 +43,7 @@ ADMIN_STATIC_PASSWORD = os.getenv("ADMIN_PASSWORD", "1!")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 MONGO_URI = os.getenv("MONGO_URI")
 
-app = FastAPI(title="University Portal - MongoDB Integrated", version="24.0.0")
+app = FastAPI(title="Ai Registration Portal - MongoDB Integrated", version="24.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,16 +56,48 @@ app.add_middleware(
 security = HTTPBearer()
 
 # --- AI Setup ---
+# --- AI Setup ---
 try:
-    llm = ChatGroq(
-        model="openai/gpt-oss-120b",  # FIXED: Valid Groq model ID
-        groq_api_key=GROQ_API_KEY,
-        temperature=0,
-        max_tokens=600,
+    # 1. Primary: The smartest model
+    llm_primary = ChatGroq(
+        model="openai/gpt-oss-120b", 
+        groq_api_key=GROQ_API_KEY, 
+        temperature=0, 
+        max_tokens=600
     )
+    
+    # 2. Fallback 1: Fast & reliable 27B model
+    llm_backup_1 = ChatGroq(
+        model="qwen/qwen3.8-27b", 
+        groq_api_key=GROQ_API_KEY, 
+        temperature=0, 
+        max_tokens=600
+    )
+    
+    # 3. Fallback 2: The slightly older Qwen architecture
+    llm_backup_2 = ChatGroq(
+        model="qwen/qwen3.6-27b", 
+        groq_api_key=GROQ_API_KEY, 
+        temperature=0, 
+        max_tokens=600
+    )
+    
+    # 4. Fallback 3: The fast 20B OpenAI model
+    llm_backup_3 = ChatGroq(
+        model="openai/gpt-oss-20b", 
+        groq_api_key=GROQ_API_KEY, 
+        temperature=0, 
+        max_tokens=600
+    )
+
+    # Standard LLM fallback chain (used for final synthesis without tools)
+    llm = llm_primary.with_fallbacks([llm_backup_1, llm_backup_2, llm_backup_3])
+    
+    print("✅ AI Models configured with 4-layer deep automatic fallbacks!")
 except Exception as e:
     print(f"AI Setup Error: {e}")
     llm = None
+    llm_primary = None
 
 # --- MongoDB Setup ---
 try:
@@ -172,7 +204,7 @@ def send_real_verification_email(recipient_email: str, otp_code: str, verify_lin
     payload = {
         "sender": {"name": "CampusAI Portal", "email": SENDER_EMAIL},
         "to": [{"email": recipient_email}],
-        "subject": "CampusAI Portal: Verify Your Registration",
+        "subject": "AI Registration Assistant Portal: Verify Your Registration",
         "htmlContent": f"""
         <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
             <h2 style="color: #4f46e5; margin-bottom: 8px;">Registration Verification</h2>
@@ -220,11 +252,11 @@ def send_password_reset_email(recipient_email: str, new_pass: str):
         "htmlContent": f"""
         <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
             <h2 style="color: #4f46e5; margin-bottom: 8px;">Password Reset Request</h2>
-            <p style="font-size: 14px; color: #64748b;">Your new temporary password is:</p>
+            <p style="font-size: 14px; color: #64748b;">Your new permanent password is:</p>
             <div style="font-size: 24px; font-weight: bold; padding: 12px 18px; background: #f8fafc; border: 1px dashed #cbd5e1; display: inline-block; border-radius: 8px; margin: 12px 0; color: #0f172a;">
                 {new_pass}
             </div>
-            <p style="font-size: 13px; color: #64748b; margin-top: 16px;">Please use this password to log in. You can update it later.</p>
+            <p style="font-size: 13px; color: #64748b; margin-top: 16px;">Please use this password to log in. You can update it manually by server handler or token access.</p>
         </div>
         """
     }
@@ -734,11 +766,6 @@ def unregister_course_fn(student_id: str, course_code: str) -> str:
 # Explicit StructuredTool instances guarantee valid names and metadata for Harmony
 tools = [
     StructuredTool.from_function(
-        func=get_course_catalog_fn,
-        name="get_course_catalog",
-        description="Retrieve available courses and schedules from the course catalog."
-    ),
-    StructuredTool.from_function(
         func=view_student_schedule_fn,
         name="view_student_schedule",
         description="View the current registered class schedule for a student."
@@ -761,7 +788,22 @@ tools = [
 ]
 
 tools_by_name = {t.name: t for t in tools}
-llm_with_tools = llm.bind_tools(tools) if llm else None
+
+if llm_primary:
+    # Bind tools to every single model individually
+    primary_with_tools = llm_primary.bind_tools(tools, tool_choice="auto")
+    b1_with_tools = llm_backup_1.bind_tools(tools, tool_choice="auto")
+    b2_with_tools = llm_backup_2.bind_tools(tools, tool_choice="auto")
+    b3_with_tools = llm_backup_3.bind_tools(tools, tool_choice="auto")
+
+    # Chain them all together in order of execution for the main chat agent
+    llm_with_tools = primary_with_tools.with_fallbacks([
+        b1_with_tools, 
+        b2_with_tools, 
+        b3_with_tools
+    ])
+else:
+    llm_with_tools = None
 
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -791,14 +833,14 @@ async def chat_endpoint(request: ChatRequest):
         5. Ask as an expert mentor and guide for every subject listed in the course catalog.
         6. You MUST wrap ALL mathematical variables, formulas, and equations in standard LaTeX delimiters ($ for inline, $$ for block).
         7. Detect the language the user is speaking and reply in that EXACT same language.
-        8. If asked for administrative data outside your tools, reply EXACTLY with: "I do not have access to that information in the university database."
+        8. If asked for administrative data outside your tools, reply EXACTLY with: "I do not have access to that irrelevent information in the registration database."
         9. Use appropriate spaces if mathematically or grammatically incorrect.
         CRITICAL ANTI-HALLUCINATION RULES:
-        1. ONLY recommend, suggest, or mention course codes and course titles that exist in the official university catalog tool output.
+        1. ONLY recommend, suggest, or mention course codes and course titles that exist in the official registration catalog tool output.
         2. NEVER make up, guess, or synthesize course numbers (e.g., NEVER say "CS 210" or "CS 201"). 
         3. If the user asks for an elective, advice, or suggestions, you MUST call the `get_course_catalog` tool FIRST before answering.
         4. If a subject or department has no available courses in the tool output, state clearly that no such courses are offered.
-        5. If the user asks for anything not in the catalog tool, reply EXACTLY: "I do not have access to that information in the university database."
+        5. If the user asks for anything not in the catalog tool, reply EXACTLY: "I do not have access to that irrelevent information in the registration database."
         Keep answers concise and short."""
         
         CHAT_HISTORY[sid] = [SystemMessage(content=system_prompt)]
@@ -856,18 +898,23 @@ async def chat_endpoint(request: ChatRequest):
         else:
             sentiment_label = "Neutral ⚪"
 
-    if "chat_logs" not in db:
-        db["chat_logs"] = []
+    # CRITICAL FIX: Re-load the db here to avoid overwriting changes made by tools!
+    fresh_db = load_database() 
+
+    if "chat_logs" not in fresh_db:
+        fresh_db["chat_logs"] = []
     
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    db["chat_logs"].append({
+    fresh_db["chat_logs"].append({
         "timestamp": timestamp,
         "student_id": sid,
         "message": request.message,
         "reply": reply,
         "sentiment": sentiment_label
     })
-    save_database(db)
+    
+    # Save the fresh database containing both the tool updates and the new chat log
+    save_database(fresh_db)
 
     return {"reply": reply}
 
@@ -940,7 +987,7 @@ async def serve_ui():
     <div class="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl border-t-4 border-amber-500 animate-pulse">
         <div class="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl font-bold">!</div>
         <h3 class="text-xl font-bold text-slate-800 mb-2">Session Reloaded</h3>
-        <p class="text-sm text-slate-600">A browser refresh was detected. For your security, your session has been temporarily disconnected.</p>
+        <p class="text-sm text-slate-600">Please Wait!!!, a browser refresh was detected. For your security, your session has been temporarily disconnected.</p>
     </div>
 </div>
 
@@ -992,7 +1039,7 @@ async def serve_ui():
     <!-- Role Selection -->
     <div id="view-role-select" class="p-8 space-y-4 max-w-2xl mx-auto">
         <button onclick="showAdminLogin()" class="w-full bg-slate-900 hover:bg-black text-white p-4 rounded-2xl font-semibold flex items-center justify-between">
-            <span>🛡️ Admin Portal (Teachers)</span>
+            <span>🛡️ Control Portal (Admin/Server Handler)</span>
             <span>&rarr;</span>
         </button>
         <button onclick="showStudentOptions()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-2xl font-semibold flex items-center justify-between">
@@ -1153,8 +1200,8 @@ async def serve_ui():
     <!-- Student Options -->
     <div id="view-student-options" class="hidden p-8 space-y-4 max-w-2xl mx-auto">
         <h2 class="text-xl font-bold text-slate-800">Student Access</h2>
-        <button onclick="showStudentRegister()" class="w-full bg-indigo-600 text-white p-3.5 rounded-xl font-semibold text-sm">Register New Account</button>
-        <button onclick="showStudentLogin()" class="w-full border border-indigo-600 text-indigo-600 p-3.5 rounded-xl font-semibold text-sm">Sign In</button>
+        <button onclick="showStudentRegister()" class="w-full bg-indigo-600 text-white p-3.5 rounded-xl font-semibold text-sm">Create New Account</button>
+        <button onclick="showStudentLogin()" class="w-full border border-indigo-600 text-indigo-600 p-3.5 rounded-xl font-semibold text-sm">Log In</button>
         <button onclick="backToRole()" class="w-full text-slate-400 text-sm">Back</button>
     </div>
 
@@ -1262,16 +1309,16 @@ async def serve_ui():
 
         <!-- Password -->
         <div>
-            <input type="password" id="reg-pass" placeholder="Create Password (min. 8 characters)" class="w-full border p-3 rounded-xl text-sm transition" oninput="validateFieldLive(this, 'password')" />
+            <input type="password" id="reg-pass" placeholder="Create Password (min. 8 characters, suggest a strong combination for password)" class="w-full border p-3 rounded-xl text-sm transition" oninput="validateFieldLive(this, 'password')" />
             <p id="err-reg-pass" class="text-xs text-red-500 mt-1 hidden">⚠️ Minimum 8 characters required.</p>
         </div>
     
         <!-- Course -->
-        <input type="text" id="reg-course" placeholder="Major / Degree Program" class="w-full border p-3 rounded-xl text-sm" />
+        <input type="text" id="reg-course" placeholder="Subject / Degree Program (eg. Computer Science, Science, Biology)" class="w-full border p-3 rounded-xl text-sm" />
 
         <div class="flex gap-2 pt-4">
             <button onclick="showStudentOptions()" class="w-1/3 bg-slate-200 p-3 rounded-xl text-sm">Back</button>
-            <button onclick="handleStudentRegister()" class="w-2/3 bg-indigo-600 text-white p-3 rounded-xl font-semibold text-sm">Register</button>
+            <button onclick="handleStudentRegister()" class="w-2/3 bg-indigo-600 text-white p-3 rounded-xl font-semibold text-sm">Chat</button>
         </div>
     </div>
 
@@ -1335,16 +1382,16 @@ function validateFieldLive(inputElement, type) {
 
     switch (type) {
         case 'name':
-            isValid = /^[A-Za-z\s]*$/.test(val);
+            isValid = /^[A-Za-z\\s]*$/.test(val);
             break;
         case 'phone':
-            const phoneRegex = /^\+91[6-9]\d{9}$/;
+            const phoneRegex = /^\\+91[6-9]\\d{9}$/;
             if (!phoneRegex.test(val)) {
                 isValid = false;
             } else {
                 const localNum = val.substring(3);
                 // Reject repeated digits (e.g. 9999999999) or sequential numbers
-                const isRepeated = /^(\d)\\1{9}$/.test(localNum);
+                const isRepeated = /^(\\d)\\1{9}$/.test(localNum);
                 const isSequential = localNum === "9876543210" || localNum === "6789012345";
                 if (isRepeated || isSequential) {
                     isValid = false;
@@ -1352,16 +1399,16 @@ function validateFieldLive(inputElement, type) {
             }
             break;
         case 'email':
-            isValid = /^[^\s@]+@[^\s@]+\.[^\s@]*$/.test(val) || val === "";
+            isValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]*$/.test(val) || val === "";
             break;
         case 'otp':
-            isValid = /^\d{0,6}$/.test(val);
+            isValid = /^\\d{0,6}$/.test(val);
             break;
         case 'password':
             isValid = val.length >= 8 || val === "";
             break;
         case 'courseCode':
-            isValid = /^[A-Za-z]{0,4}\d{0,4}$/.test(val);
+            isValid = /^[A-Za-z]{0,4}\\d{0,4}$/.test(val);
             break;
     }
 
@@ -1476,16 +1523,16 @@ function validateCourseFieldLive(el, type) {
     if (val !== "") {
         switch (type) {
             case 'code':
-                valid = /^[A-Z]{2,4}\d{2,4}$/.test(val);
+                valid = /^[A-Z]{2,4}\\d{2,4}$/.test(val);
                 break;
             case 'title':
-                valid = /^[0-9\s\-&,]*[a-zA-Z][a-zA-Z0-9\s\-&,]*$/.test(val);
+                valid = /^[0-9\\s\\-&,]*[a-zA-Z][a-zA-Z0-9\\s\\-&,]*$/.test(val);
                 break;
             case 'dept':
                 valid = /^[A-Z]+$/.test(val);
                 break;
             case 'days':
-                valid = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(\/(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$/.test(val);
+                valid = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(\\/(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$/.test(val);
                 break;
             case 'time':
                 valid = /^(1[0-2]|0?[1-9]):[0-5][0-9] (AM|PM)$/.test(val);
@@ -1685,10 +1732,10 @@ function formatScheduleStr(days, start, end) {
 }
 
 function validateCourseData(code, title, dept, credits, seats, days, start, end) {
-    if (code !== null && !/^[A-Za-z]{2,4}\d{2,4}$/.test(code)) {
+    if (code !== null && !/^[A-Za-z]{2,4}\\d{2,4}$/.test(code)) {
         alert("Invalid Course Code."); return false;
     }
-    if (!/^[0-9\s\-\&,]*[a-zA-Z][a-zA-Z0-9\s\-\&,]*$/.test(title)) {
+    if (!/^[0-9\\s\\-\\&,]*[a-zA-Z][a-zA-Z0-9\\s\\-\\&,]*$/.test(title)) {
         alert("Invalid Title."); return false;
     }
     if (!/^[A-Za-z]+$/.test(dept)) {
@@ -1705,7 +1752,7 @@ function validateCourseData(code, title, dept, credits, seats, days, start, end)
         alert("You must provide at least Days and a Start Time."); return false;
     }
 
-    const daysRegex = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(\/(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$/;
+    const daysRegex = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(\\/(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$/;
     if (!daysRegex.test(days)) {
         alert("Invalid Days format. Use 3-letter abbreviations separated by a slash (e.g., Mon/Wed, Tue/Thu/Fri).");
         return false;
@@ -1950,9 +1997,9 @@ async function verifyPhoneAnimation() {
     const phoneInput = document.getElementById('reg-phone').value.trim();
     const localNum = phoneInput.substring(3);
     
-    const isDummy = /^(\d)\1{9}$/.test(localNum) || localNum === "9876543210" || localNum === "6789012345";
+    const isDummy = /^(\\d)\1{9}$/.test(localNum) || localNum === "9876543210" || localNum === "6789012345";
 
-    if (!phoneInput || !/^\+91[6-9]\d{9}$/.test(phoneInput) || isDummy) {
+    if (!phoneInput || !/^\\+91[6-9]\\d{9}$/.test(phoneInput) || isDummy) {
         return alert("Please enter a valid 12-digit Indian phone number starting with +91 (Dummy numbers are rejected).");
     }
     
@@ -2066,7 +2113,7 @@ async function verifyOtp() {
 }
 
 function validateRegistrationForm(name, phone) {
-    const nameRegex = /^[A-Za-z\s]+$/;
+    const nameRegex = /^[A-Za-z\\s]+$/;
     
     if (!nameRegex.test(name)) {
         alert("Invalid Input: Name must only contain letters and spaces. Numbers and special characters are not allowed.");
@@ -2075,9 +2122,9 @@ function validateRegistrationForm(name, phone) {
     }
     
     const localNum = phone.substring(3);
-    const isDummy = /^(\d)\1{9}$/.test(localNum) || localNum === "9876543210" || localNum === "6789012345";
+    const isDummy = /^(\\d)\\1{9}$/.test(localNum) || localNum === "9876543210" || localNum === "6789012345";
 
-    if (!/^\+91[6-9]\d{9}$/.test(phone) || isDummy) {
+    if (!/^\\+91[6-9]\\d{9}$/.test(phone) || isDummy) {
         alert("Please enter a valid 12-digit Indian phone number starting with +91 (Dummy numbers are rejected).");
         document.getElementById('reg-phone').focus();
         return false;
@@ -2201,7 +2248,7 @@ function startChat(name, id) {
     document.getElementById('chat-box').innerHTML = `
         <div class="bg-white p-5 rounded-2xl text-slate-800 border border-slate-200 shadow-sm mb-4">
             <h3 class="text-lg font-bold text-indigo-600 mb-1">👋 Welcome, ${name}!</h3>
-            <p class="text-sm text-slate-600">I am your University AI Assistant. I can check course availability, manage your schedule, and register you for classes.</p>
+            <p class="text-sm text-slate-600">I am your AI Registration Assistant. I can check course availability, manage your schedule, and register you for classes.</p>
             <p class="text-xs font-semibold text-slate-500 mt-4 mb-2 uppercase tracking-wide">Frequently Asked Questions</p>
             ${suggestionHTML}
         </div>
