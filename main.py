@@ -1052,7 +1052,7 @@ async def serve_ui():
     <div id="view-admin-login" class="hidden p-8 space-y-4 max-w-2xl mx-auto">
         <h2 class="text-xl font-bold text-slate-800">Admin Authentication</h2>
         <input type="text" id="admin-user" placeholder="Username (admin)" class="w-full border p-3 rounded-xl text-sm" />
-        <input type="password" id="admin-pass" placeholder="Password (read "readme.md" or KEY_CREDENTIALS)" class="w-full border p-3 rounded-xl text-sm" />
+        <input type="password" id="admin-pass" placeholder="Password (read "readme.md" or "KEY_CREDENTIALS.md")" class="w-full border p-3 rounded-xl text-sm" />
         <div class="flex gap-2">
             <button onclick="backToRole()" class="w-1/3 bg-slate-200 p-3 rounded-xl text-sm font-medium">Back</button>
             <button onclick="handleAdminLogin()" class="w-2/3 bg-indigo-600 text-white p-3 rounded-xl text-sm font-semibold">Login</button>
